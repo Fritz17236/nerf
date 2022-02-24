@@ -7,7 +7,7 @@ import wget
 from warnings import warn
 import constants as const
 import skimage
-import time
+import time, datetime
 from numba import jit
 
 
@@ -81,18 +81,18 @@ class NerfNet(nn.Module):
         # create a sequential stack that takes (network_input,y,z) input in batches, process first 4 hidden layers
         layer_list = [nn.Linear(3 + 3 * 2 * const.L_ENCODE, 256), nn.ReLU()]
         for i in range(3):
-            layer_list += [nn.Linear(256, 256), nn.ReLU()]
+            layer_list += [nn.Linear(256, 256, bias=False), nn.ReLU()]
         self.stack_pre_inject = nn.Sequential(*layer_list)
 
         # inject input again and process 4 remaining layers
         layer_list = [nn.Linear(3 + 3 * 2 * const.L_ENCODE + 256, 256), nn.ReLU()]
         for i in range(3):
-            layer_list += [nn.Linear(256, 256), nn.ReLU()]
+            layer_list += [nn.Linear(256, 256, bias=False), nn.ReLU()]
         self.stack_post_inject = nn.Sequential(*layer_list)
 
         # TODO: implement directional (not just density) encoding in network
 
-        self.out_layer = nn.Sequential(*[nn.ReLU(), nn.Linear(256, 128), nn.Linear(128, 4)])
+        self.out_layer = nn.Sequential(*[nn.ReLU(), nn.Linear(256, 128, bias=False), nn.Linear(128, 4)])
 
     def forward(self, network_input):
         network_input = self.embed(network_input)
@@ -128,7 +128,7 @@ def compute_sample_rays(height: int, width: int, focal_len: float, c2w: torch.Te
 
     # create copies of ray origin to match the size / number of ray directions
     rays_o = torch.broadcast_to(c2w[:3, -1], rays_d.size())
-    return rays_d, rays_o
+    return rays_o, rays_d
 
 
 def render_rays(model: NerfNet(), rays_o: torch.Tensor, rays_d: torch.Tensor,
@@ -143,14 +143,14 @@ def render_rays(model: NerfNet(), rays_o: torch.Tensor, rays_d: torch.Tensor,
     :param far: float specifying the far clipping plane of the view frustum
     :param num_samples: number of points along each cast ray to query the network
     :param stratified_sampling: uniformly sample query points along each ray
-    :return: rgbs, depths,
+    :return: rgbs
     """
 
     # compute 3D query points
     ts = torch.linspace(start=near, end=far, steps=num_samples).type(const.DTYPE)
     if stratified_sampling:
         add = torch.rand(list(rays_o.size()[:-1]) + [num_samples]) * (far - near) / (num_samples)
-        ts = ts[np.newaxis, np.newaxis, :] + add
+        ts = ts[np.newaxis, np.newaxis, :] + add.type(const.DTYPE)
     query_points = rays_o[..., None, :] + rays_d[..., None, :] * ts[..., :, None]
 
     # Extract value of network at query points
@@ -217,6 +217,8 @@ if __name__ == '__main__':
 
     # enter training loop
     t_start = time.time()
+
+    print("training start at: ", datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
     for idx_epoch in range(const.NUM_TRAINING_EPOCHS):
         psnrs = []
         for i, (target_img, pose_in) in enumerate(torch.utils.data.DataLoader(ip_dataset)):
@@ -233,142 +235,12 @@ if __name__ == '__main__':
                                                         output_img.cpu().detach().numpy())
             )
         seconds = time.time() - t_start
-        time_str = "{0}:{1}:{2}".format(int(seconds // (60 * 60)), int((seconds // 60) % 60),  int(seconds % 60))
+        time_str = "{0:0>2}:{1:0>2}:{2:0<2}".format(int(seconds // (60 * 60)), int((seconds // 60) % 60),  int(seconds % 60))
 
-        print('epoch: {0}, psnr: {1}, time: {2}'.format(idx_epoch, torch.mean(torch.tensor(psnrs)), time_str))
+        print('epoch: {0:0>5}, psnr: {1:>8}, loss: {3:>5},  elapsed time: {2}'.format(idx_epoch, np.round(torch.mean(torch.tensor(psnrs)).cpu().detach().numpy(),6), time_str, loss.item()))
         torch.save(model.state_dict(), os.path.join(const.MODEL_SAVE_DIR, "nerf_net"))
 
     # exit(0)
 
 # endregion
 
-# region old code
-# # Download training data from open datasets.
-# training_data = datasets.FashionMNIST(
-#     root="data",
-#     train=True,
-#     download=True,
-#     transform=ToTensor(),
-# )
-#
-# # Download test data from open datasets.
-# test_data = datasets.FashionMNIST(
-#     root="data",
-#     train=False,
-#     download=True,
-#     transform=ToTensor(),
-# )
-#
-# batch_size = 64
-#
-# # Create data loaders.
-# train_dataloader = DataLoader(training_data, batch_size=batch_size)
-# test_dataloader = DataLoader(test_data, batch_size=batch_size)
-#
-# for X, y in test_dataloader:
-#     print(f"Shape of X [N, C, H, W]: {X.shape}")
-#     print(f"Shape of y: {y.shape} {y.dtype}")
-#     break
-#
-# # Get cpu or gpu device for training.
-# device = "cuda" if torch.cuda.is_available() else "cpu"
-# print(f"Using {device} device")
-#
-#
-# # Define model
-# class NeuralNetwork(nn.Module):
-#     def __init__(self):
-#         super(NeuralNetwork, self).__init__()
-#         self.flatten = nn.Flatten()
-#         self.linear_relu_stack = nn.Sequential(
-#             nn.Linear(28 * 28, 512),
-#             nn.ReLU(),
-#             nn.Linear(512, 512),
-#             nn.ReLU(),
-#             nn.Linear(512, 10)
-#         )
-#
-#     def forward(self, x):
-#         x = self.flatten(x)
-#         logits = self.linear_relu_stack(x)
-#         return logits
-#
-#
-# model = NeuralNetwork().to(device)
-# print(model)
-#
-# loss_fn = nn.CrossEntropyLoss()
-# optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
-#
-#
-# def train(dataloader, model, loss_fn, optimizer):
-#     size = len(dataloader.dataset)
-#     model.train()
-#     for batch_num, (X, y) in enumerate(dataloader):
-#         X, y = X.to(device), y.to(device)
-#
-#         # Compute prediction error
-#         pred = model(X)
-#         loss = loss_fn(pred, y)
-#
-#         # Backpropagation
-#         optimizer.zero_grad()  # zeros gradient buffers
-#         loss.backward()  #
-#         optimizer.step()
-#
-#         if batch_num % 100 == 0:
-#             loss, current = loss.item(), batch_num * len(X)
-#             print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}]")
-#
-#
-# def test(dataloader, model, loss_fn):
-#     size = len(dataloader.dataset)
-#     num_batches = len(dataloader)
-#     model.eval()
-#     test_loss, correct = 0, 0
-#     with torch.no_grad():  # if you know yhou won't comptue gradients, this speeds up computations
-#         for X, y in dataloader:
-#             X, y = X.to(device), y.to(device)
-#             pred = model(X)
-#             test_loss += loss_fn(pred, y).item()
-#             correct += (pred.argmax(1) == y).type(torch.float).sum().item()
-#     test_loss /= num_batches
-#     correct /= size
-#     print(f"Test Error: \n Accuracy: {(100 * correct):>0.1f}%, Avg loss: {test_loss:>8f} \n")
-#
-#
-# epochs = 5
-# for t in range(epochs):
-#     print(f"Epoch {t + 1}\n-------------------------------")
-#     train(train_dataloader, model, loss_fn, optimizer)
-#     test(test_dataloader, model, loss_fn)
-# print("Done!")
-#
-# torch.save(model.state_dict(), "model.pth")
-# print("Saved PyTorch Model State to model.pth")
-#
-# model = NeuralNetwork()
-# model.load_state_dict(torch.load("model.pth"))
-#
-# classes = [
-#     "T-shirt/top",
-#     "Trouser",
-#     "Pullover",
-#     "Dress",
-#     "Coat",
-#     "Sandal",
-#     "Shirt",
-#     "Sneaker",
-#     "Bag",
-#     "Ankle boot",
-# ]
-#
-# model.eval()  # switch network to evaluate model mode
-#
-# x, y = test_data[0][0], test_data[0][1]
-# with torch.no_grad():
-#     pred = model(x)
-#     predicted, actual = classes[pred[0].argmax(0)], classes[y]
-#     print(f'Predicted: "{predicted}", Actual: "{actual}"')
-#
-# endregion
