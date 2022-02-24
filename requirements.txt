@@ -1,5 +1,5 @@
 sphinx
-numpy~=1.22.2
+numpy~=1.20.0
 matplotlib~=3.4.3
 configargparse
 torch~=1.10.2+cu113
@@ -10,3 +10,5 @@ tensorflow~=2.7.0
 imageio~=2.13.5
 wget~=3.2
 ignite~=1.1.0
+numba~=0.54.0
+tqdm~=4.62.1

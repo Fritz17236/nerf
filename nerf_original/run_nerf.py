@@ -1,4 +1,4 @@
-stimport os
+import os
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 
 import sys
