@@ -91,26 +91,14 @@ if __name__ == '__main__':
         model.load_state_dict(torch.load(model_file))
 
 
+    frames = []
+    for th in tqdm.tqdm(np.linspace(0., 360., 120, endpoint=False)):
+        c2w = pose_spherical(th, -30., 4.)
+        rays_o, rays_d = compute_sample_rays(height, width, focal_len, c2w[:3,:4])
+        rgb = render_rays(model, rays_o, rays_d,).cpu().detach().numpy()
+        frames.append((255*np.clip(rgb, 0 ,1)).astype(np.uint8))
 
-kwargs = {"theta": 0, "phi": 0, "radius": 1}
-render_view(**kwargs)
+    import imageio
+    f = 'video.mp4'
+    imageio.mimwrite(f, frames, fps=30, quality=7)
 
-frames = []
-interp_rate = 100
-torch.cuda.empty_cache()
-
-
-
-frames = []
-for th in tqdm.tqdm(np.linspace(0., 360., 120, endpoint=False)):
-    c2w = pose_spherical(th, -30., 4.)
-    rays_o, rays_d = compute_sample_rays(height, width, focal_len, c2w[:3,:4])
-    rgb = render_rays(model, rays_o, rays_d,).cpu().detach().numpy()
-    frames.append((255*np.clip(rgb, 0 ,1)).astype(np.uint8))
-
-import imageio
-f = 'video.mp4'
-imageio.mimwrite(f, frames, fps=30, quality=7)
-
-kwargs = {"theta": 0, "phi": 0, "radius": 1}
-render_view()
