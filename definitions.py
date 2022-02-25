@@ -109,13 +109,18 @@ class NerfNet(nn.Module):
             loc_input = self.flatten(loc_input)
             dir_input = self.embed(dir_input)
             dir_input = self.flatten(dir_input)
+            out = torch.utils.checkpoint.checkpoint_sequential(self.stack_pre_inject, 1024, loc_input)
+           # out = self.stack_pre_inject(loc_input)
 
-            out = self.stack_pre_inject(loc_input)
             reinjected_input = torch.cat([out, loc_input], dim=-1)
-            out = self.stack_post_inject(reinjected_input)
+          #  out = self.stack_post_inject(reinjected_input)
+            out = torch.utils.checkpoint.checkpoint_sequential(self.stack_post_inject, 1024, reinjected_input)
+
             sigma = out[:,0:1]
             out_cat_dir = torch.cat([out[:,1:], dir_input], dim=-1)
-            rgb = self.out_layer(out_cat_dir)
+           # rgb = self.out_layer(out_cat_dir)
+            rgb = torch.utils.checkpoint.checkpoint_sequential(self.out_layer, 1024, out_cat_dir)
+
             return torch.cat([rgb, sigma], dim=-1)
 
         else:
