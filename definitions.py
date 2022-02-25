@@ -81,7 +81,9 @@ class NerfNet(nn.Module):
 
         self.flatten = nn.Flatten()
         # create a sequential stack that takes (network_input,y,z) input in batches, process first 4 hidden layers
+
         layer_list = [nn.Linear(3 + 3 * 2 * const.L_ENCODE, 256), nn.ReLU()]
+
         for i in range(3):
             layer_list += [nn.Linear(256, 256, bias=False), nn.ReLU()]
         self.stack_pre_inject = nn.Sequential(*layer_list)
@@ -93,15 +95,35 @@ class NerfNet(nn.Module):
         self.stack_post_inject = nn.Sequential(*layer_list)
 
         # TODO: implement directional (not just density) encoding in network
-
-        self.out_layer = nn.Sequential(*[nn.ReLU(), nn.Linear(256, 128, bias=False), nn.Linear(128, 4)])
+        if const.DIRECTIONAL_ENCODING:
+            self.out_layer = nn.Sequential(*[nn.ReLU(), nn.Linear(255 + (3 + 3 * 2 * const.L_ENCODE), 128, bias=False), nn.Linear(128, 3)])
+        else:
+            self.out_layer = nn.Sequential(*[nn.ReLU(), nn.Linear(256, 128, bias=False), nn.Linear(128, 4)])
 
     def forward(self, network_input):
-        network_input = self.embed(network_input)
-        network_input = self.flatten(network_input)
-        out = self.stack_pre_inject(network_input)
-        inject = torch.cat([out, network_input], dim=1)
-        out = self.stack_post_inject(inject)
+        if const.DIRECTIONAL_ENCODING:
+            loc_input = network_input[:, :3]
+            dir_input = network_input[:, 3:]
+
+            loc_input = self.embed(loc_input)
+            loc_input = self.flatten(loc_input)
+            dir_input = self.embed(dir_input)
+            dir_input = self.flatten(dir_input)
+
+            out = self.stack_pre_inject(loc_input)
+            reinjected_input = torch.cat([out, loc_input], dim=-1)
+            out = self.stack_post_inject(reinjected_input)
+            sigma = out[:,0:1]
+            out_cat_dir = torch.cat([out[:,1:], dir_input], dim=-1)
+            rgb = self.out_layer(out_cat_dir)
+            return torch.cat([rgb, sigma], dim=-1)
+
+        else:
+            network_input = self.embed(network_input)
+            network_input = self.flatten(network_input)
+            out = self.stack_pre_inject(network_input)
+            inject = torch.cat([out, network_input], dim=1)
+            out = self.stack_post_inject(inject)
         return self.out_layer(out)
 
 
@@ -133,9 +155,20 @@ def compute_sample_rays(height: int, width: int, focal_len: float, c2w: torch.Te
     return rays_o, rays_d
 
 
+def batchify(to_apply, chunk_size=const.RAY_CHUNK_SIZE):
+    """Constructs a version of 'fn' that applies to smaller batches."""
+    if chunk_size is None:
+        return to_apply
+
+    def ret(inputs):
+        return torch.concat([to_apply(inputs[i:i+chunk_size:]) for i in range(0, inputs.shape[0], chunk_size)], 0)
+
+    return ret
+
+
 def render_rays(model: NerfNet(), rays_o: torch.Tensor, rays_d: torch.Tensor,
                 near: float = const.NEAR_FRUSTUM, far: float = const.FAR_FRUSTUM,
-                num_samples: int = const.NUM_RAY_SAMPLES, stratified_sampling: bool = const.STRATIFIED_SAMPLING, directional_encoding=const.DIRECTIONAL_ENCODING):
+                num_samples: int = const.NUM_RAY_SAMPLES):
     """
     Render a given set of rays by querying a given neural network.
     :param model: neural network to query. expects input to be passed through positional_encode
@@ -150,21 +183,23 @@ def render_rays(model: NerfNet(), rays_o: torch.Tensor, rays_d: torch.Tensor,
 
     # compute 3D query points
     ts = torch.linspace(start=near, end=far, steps=num_samples).type(const.DTYPE)
-    if stratified_sampling:
+    if const.STRATIFIED_SAMPLING:
         add = torch.rand(list(rays_o.size()[:-1]) + [num_samples]) * (far - near) / (num_samples)
         ts = ts[np.newaxis, np.newaxis, :] + add.type(const.DTYPE)
     query_points = rays_o[..., None, :] + rays_d[..., None, :] * ts[..., :, None]
 
+    if const.DIRECTIONAL_ENCODING:
+        directions = torch.broadcast_to(rays_d[:, :, np.newaxis, :], query_points.size())
+        directions = torch.nn.functional.normalize(directions, dim=-1)
+        query_points = torch.cat([query_points, directions], dim=-1)
+        query_points_flattened = torch.reshape(query_points, [-1, 6])
+    else:
+
+        query_points_flattened = torch.reshape(query_points, [-1, 3])
+
     # Extract value of network at query points
-    query_points_flattened = torch.reshape(query_points, [-1, 3])
-    rq_dataset = RayQueryDataset(query_points_flattened)  # create dataset object for easier manipulation
-    # data loader to abstract batching and allow multiprocessing and gpu acceleration
-    # rq_dataloader = torch.utils.data.DataLoader(rq_dataset, batch_size=1024*128, shuffle=True, pin_memory=const.USE_CUDA,
-    #                            num_workers=const.NUM_CPU_CORES)
-    # batched_output = torch.Tensor()
-    # for ray_batch in rq_dataloader:
-    #     batched_output = torch.cat((batched_output, model(ray_batch)), dim=0)
-    batched_output = model(query_points_flattened)
+
+    batched_output = batchify(model)(query_points_flattened)
     batched_output = torch.reshape(batched_output, list(query_points.shape[:-1]) + [4])
 
     # compute output density and rgb colors
