@@ -6,6 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 import torchvision
+import tqdm
 from torch import nn
 import wget
 import constants as const
@@ -54,14 +55,16 @@ if __name__ == '__main__':
     focal_len = .5 * width / np.tan(.5 * camera_angle_x)
 
     images = torch.Tensor(all_imgs[0][..., :3]).type(const.DTYPE)
-    # # downsample by factor of 8
-    # images_resized = torch.empty([images.shape[0],100, 100, images.shape[-1]])
-    # for idx in range(images.shape[0]):
-    #     images_resized[idx, ...] = torchvision.transforms.functional.resize(images[idx,...].T, size=[100, 100]).T
-    # height = 100
-    # width = 100
-    # focal_len = focal_len / 8.
-    # images = images_resized.type(const.DTYPE)
+    # # downsample by factor of k
+    factor = const.DOWNSAMPLE_FACTOR
+    height //= factor
+    width //= factor
+    focal_len //= factor
+    images_resized = torch.empty([images.shape[0],height, width, images.shape[-1]])
+    for idx in range(images.shape[0]):
+        images_resized[idx, ...] = torchvision.transforms.functional.resize(images[idx,...].T, size=[height, width]).T
+
+    images = images_resized.type(const.DTYPE)
 
 
     poses = torch.Tensor(all_poses[0]).type(const.DTYPE)
@@ -113,15 +116,40 @@ if __name__ == '__main__':
     for idx_epoch in range(const.NUM_TRAINING_EPOCHS):
         psnrs = []
         losses = []
-        for i, (target_img, pose_in) in enumerate(torch.utils.data.DataLoader(ip_dataset)):
+        for i, (target_img, pose_in) in enumerate(tqdm.tqdm(torch.utils.data.DataLoader(ip_dataset))):
+            # TODO: query coarse network for importance sampling, compute loss, step
+            # TODO: use coarse output to determine samples for fine network, query network, compute loss, step
             pose_in = torch.squeeze(pose_in)
             target_img = torch.squeeze(target_img)
             rays_o, rays_d = compute_sample_rays(height, width, focal_len, torch.squeeze(pose_in))
-            model.zero_grad()  # zero gradient buffer before rendering rays
-            output_img = render_rays(model, rays_o, rays_d)
-            loss = criterion(output_img, target_img)
-            loss.backward()
-            optimizer.step()
+            # TODO: break target img and sample rays into corresponding, subblocks, pass thru net and run GD on subblocks
+
+            # pass BLOCK_SIZE subset of image & rays through render to avoid out-of-memory
+            block_size = 100 # assume image is shape  k * block_size  X k * block_size where k is an integer
+            num_blocks_h = height // block_size
+            num_blocks_w = width // block_size
+            output_img = torch.zeros_like(target_img)
+
+
+            for i in range(num_blocks_h):
+                for j in range(num_blocks_w):
+                    model.zero_grad()
+
+                    target_img_block = target_img[i * block_size: (i+1)*block_size, j*block_size:(j+1)*block_size,:]
+                    rays_o_block = rays_o[i * block_size: (i+1)*block_size, j*block_size:(j+1)*block_size,:]
+                    rays_d_block = rays_d[i * block_size: (i+1)*block_size, j*block_size:(j+1)*block_size,:]
+                    output_img_block = render_rays(model, rays_o_block, rays_d_block)
+
+                    # store subset for computing PSNR
+                    output_img[i * block_size: (i+1)*block_size, j*block_size:(j+1)*block_size,:] = output_img_block
+
+                    loss = criterion(output_img_block, target_img_block)
+                    loss.backward()
+                    optimizer.step()
+
+            # compute combined loss, step
+
+
             psnrs.append(
                 skimage.metrics.peak_signal_noise_ratio(target_img.cpu().detach().numpy(),
                                                         output_img.cpu().detach().numpy())
@@ -133,7 +161,7 @@ if __name__ == '__main__':
         print('epoch: {0:0>5}, psnr: {1:>8}, loss: {3:>5},  elapsed time: {2}'.format(idx_epoch, np.round(torch.mean(torch.tensor(psnrs)).cpu().detach().numpy(),6), time_str, np.mean(losses)))
         torch.save(model.state_dict(), os.path.join(const.MODEL_SAVE_DIR, "nerf_net"))
 
-    # exit(0)
+    # exit(0)1
 
 # endregion
 

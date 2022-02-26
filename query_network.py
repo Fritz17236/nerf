@@ -71,35 +71,35 @@ def render_view(**kwargs):
     plt.show()
 
 if __name__ == '__main__':
+    with torch.inference_mode():
+        # Load Data
+        data_file = os.path.join('data', 'tiny_nerf_data.npz')
+        if not os.path.exists(data_file):  # get tiny nerf data
+            wget.download("http://cseweb.ucsd.edu/~viscomp/projects/LF/papers/ECCV20/nerf/tiny_nerf_data.npz",
+                          out=data_file)
 
-    # Load Data
-    data_file = os.path.join('data', 'tiny_nerf_data.npz')
-    if not os.path.exists(data_file):  # get tiny nerf data
-        wget.download("http://cseweb.ucsd.edu/~viscomp/projects/LF/papers/ECCV20/nerf/tiny_nerf_data.npz",
-                      out=data_file)
-
-    data = np.load(data_file)
-    images = torch.from_numpy(data['images']).type(const.DTYPE)
-    poses = torch.from_numpy(data['poses']).type(const.DTYPE)
-    focal_len = torch.from_numpy(data['focal']).type(const.DTYPE)  # set to foal_len = torch.from...
-    height, width = images.shape[1:3]  # set to height, width = images.shape[1:3]
-
-
-    # theta, phi, radius provide these to render to perform rendering
-    model = NerfNet().type(const.DTYPE)
-    model_file = os.path.join(const.MODEL_SAVE_DIR, 'nerf_net')
-    if os.path.exists(model_file):
-        model.load_state_dict(torch.load(model_file))
+        data = np.load(data_file)
+        images = torch.from_numpy(data['images']).type(const.DTYPE)
+        poses = torch.from_numpy(data['poses']).type(const.DTYPE)
+        focal_len = torch.from_numpy(data['focal']).type(const.DTYPE)  # set to foal_len = torch.from...
+        height, width = images.shape[1:3]  # set to height, width = images.shape[1:3]
 
 
-    frames = []
-    for th in tqdm.tqdm(np.linspace(0., 360., 120, endpoint=False)):
-        c2w = pose_spherical(th, -30., 4.)
-        rays_o, rays_d = compute_sample_rays(height, width, focal_len, c2w[:3,:4])
-        rgb = render_rays(model, rays_o, rays_d,).cpu().detach().numpy()
-        frames.append((255*np.clip(rgb, 0 ,1)).astype(np.uint8))
+        # theta, phi, radius provide these to render to perform rendering
+        model = NerfNet().type(const.DTYPE)
+        model_file = os.path.join(const.MODEL_SAVE_DIR, 'nerf_net')
+        if os.path.exists(model_file):
+            model.load_state_dict(torch.load(model_file))
 
-    import imageio
-    f = 'video.mp4'
-    imageio.mimwrite(f, frames, fps=30, quality=7)
+
+        frames = []
+        for th in tqdm.tqdm(np.linspace(0., 360., 120, endpoint=False)):
+            c2w = pose_spherical(th, -30., 4.)
+            rays_o, rays_d = compute_sample_rays(height, width, focal_len, c2w[:3,:4])
+            rgb = render_rays(model, rays_o, rays_d,).cpu().detach().numpy()
+            frames.append((255*np.clip(rgb, 0 ,1)).astype(np.uint8))
+
+        import imageio
+        f = 'video.mp4'
+        imageio.mimwrite(f, frames, fps=30, quality=7)
 

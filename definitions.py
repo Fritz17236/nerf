@@ -101,6 +101,8 @@ class NerfNet(nn.Module):
             self.out_layer = nn.Sequential(*[nn.ReLU(), nn.Linear(256, 128, bias=False), nn.Linear(128, 4)])
 
     def forward(self, network_input):
+        # if not network_input.requires_grad:
+        #     network_input.requires_grad = True
         if const.DIRECTIONAL_ENCODING:
             loc_input = network_input[:, :3]
             dir_input = network_input[:, 3:]
@@ -109,18 +111,18 @@ class NerfNet(nn.Module):
             loc_input = self.flatten(loc_input)
             dir_input = self.embed(dir_input)
             dir_input = self.flatten(dir_input)
-            out = torch.utils.checkpoint.checkpoint_sequential(self.stack_pre_inject, 1024, loc_input)
-           # out = self.stack_pre_inject(loc_input)
+            #out = torch.utils.checkpoint.checkpoint_sequential(self.stack_pre_inject, 2, loc_input)
+            out = self.stack_pre_inject(loc_input)
 
             reinjected_input = torch.cat([out, loc_input], dim=-1)
-          #  out = self.stack_post_inject(reinjected_input)
-            out = torch.utils.checkpoint.checkpoint_sequential(self.stack_post_inject, 1024, reinjected_input)
+            out = self.stack_post_inject(reinjected_input)
+            #   out = torch.utils.checkpoint.checkpoint_sequential(self.stack_post_inject, 2, reinjected_input)
 
             sigma = out[:,0:1]
-            out_cat_dir = torch.cat([out[:,1:], dir_input], dim=-1)
-           # rgb = self.out_layer(out_cat_dir)
-            rgb = torch.utils.checkpoint.checkpoint_sequential(self.out_layer, 1024, out_cat_dir)
-
+            out = torch.cat([out[:,1:], dir_input], dim=-1)
+            rgb = self.out_layer(out)
+            # rgb = torch.utils.checkpoint.checkpoint_sequential(self.out_layer, 2, out_cat_dir)
+            del out
             return torch.cat([rgb, sigma], dim=-1)
 
         else:
@@ -203,13 +205,11 @@ def render_rays(model: NerfNet(), rays_o: torch.Tensor, rays_d: torch.Tensor,
         query_points_flattened = torch.reshape(query_points, [-1, 3])
 
     # Extract value of network at query points
-
-    batched_output = batchify(model)(query_points_flattened)
-    batched_output = torch.reshape(batched_output, list(query_points.shape[:-1]) + [4])
+    output = model(query_points_flattened).reshape(list(query_points.shape[:3]) + [4])
 
     # compute output density and rgb colors
-    sigma = torch.nn.functional.relu(batched_output[..., 3])
-    rgbs = torch.sigmoid(batched_output[..., :3])
+    sigma = torch.nn.functional.relu(output[..., 3])
+    rgbs = torch.sigmoid(output[..., :3])
 
     # perform volumetric rendering
     dists = torch.cat([ts[..., 1:] - ts[..., :-1], torch.broadcast_to(torch.tensor(1e10).type(const.DTYPE),
