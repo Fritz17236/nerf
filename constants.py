@@ -15,6 +15,7 @@ NUM_TRAINING_EPOCHS = 1024          # Number of iterations to train the neural n
 MODEL_SAVE_DIR = './'               # Location to save neural networks to
 DATA_DIR = './data/hotdog'          # Path to where network training data is stored
 RAY_CHUNK_SIZE = (8 * 1e9)  // 64   # Rays are passed through network in chunks (batches)  to prevent out-of-memory
-DOWNSAMPLE_FACTOR = 4               # Downsample image input before manipulating.
+DOWNSAMPLE_FACTOR = 1               # Downsample image input before manipulating.
+VIDEO_OUTPUT_FILE = 'video.mp4'     # File for video output
 DTYPE = torch.cuda.FloatTensor if USE_CUDA else torch.FloatTensor  # set const datatype if using CUDA
 

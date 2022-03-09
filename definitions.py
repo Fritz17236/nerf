@@ -5,6 +5,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 import torchvision
+import tqdm
+from matplotlib import pyplot as plt
 from torch import nn
 import wget
 from warnings import warn
@@ -221,3 +223,215 @@ def render_rays(model: NerfNet(), rays_o: torch.Tensor, rays_d: torch.Tensor,
     return torch.sum(weights[..., None] * rgbs, -2)
 
 
+def load_data(data_set='hotdog'):
+    if data_set == 'hotdog':
+        global height, width, focal_len
+        splits = ['train', 'val', 'test']
+        metas = {}
+        for s in splits:
+            with open(os.path.join(const.DATA_DIR, 'transforms_{}.json'.format(s)), 'r') as fp:
+                metas[s] = json.load(fp)
+        all_imgs = []
+        all_poses = []
+        counts = [0]
+        for s in splits:
+            meta = metas[s]
+            imgs = []
+            poses = []
+
+            for frame in meta['frames'][::1]:
+                fname = os.path.join(const.DATA_DIR, frame['file_path'] + '.png')
+                imgs.append(imageio.imread(fname))
+                poses.append(np.array(frame['transform_matrix']))
+            imgs = (np.array(imgs) / 255.).astype(np.float32)  # keep all 4 channels (RGBA)
+            poses = np.array(poses).astype(np.float32)
+            counts.append(counts[-1] + imgs.shape[0])
+            all_imgs.append(imgs)
+            all_poses.append(poses)
+        i_split = [np.arange(counts[i], counts[i + 1]) for i in
+                   range(3)]  # this is a list of indices used to split the dataset
+        height, width = imgs[0].shape[:2]
+        camera_angle_x = float(meta['camera_angle_x'])
+        focal_len = .5 * width / np.tan(.5 * camera_angle_x)
+        images = torch.Tensor(all_imgs[0][..., :3]).type(const.DTYPE)
+        images_test = torch.Tensor(all_imgs[2][..., :3]).type(const.DTYPE)
+
+        # # downsample by factor of k
+        factor = const.DOWNSAMPLE_FACTOR
+        height //= factor
+        width //= factor
+        focal_len //= factor
+
+        images_resized = torch.empty([images.shape[0], height, width, images.shape[-1]])
+        images_resized_test = torch.empty([images_test.shape[0], height, width, images_test.shape[-1]])
+        for idx in range(images.shape[0]):
+            images_resized[idx, ...] = torchvision.transforms.functional.resize(images[idx, ...].T,
+                                                                                size=[height, width]).T
+            images_resized_test[idx, ...] = torchvision.transforms.functional.resize(images_test[idx, ...].T,
+                                                                                size=[height, width]).T
+
+        images = images_resized.type(const.DTYPE)
+        images_test = images_resized_test.type(const.DTYPE)
+        poses = torch.Tensor(all_poses[0]).type(const.DTYPE)
+        poses_test = torch.Tensor(all_poses[2]).type(const.DTYPE)
+
+        ip_dataset = ImagePoseDataset(images, poses)
+        ip_dataset_test = ImagePoseDataset(images_test, poses_test)
+
+        return height, width, focal_len, ip_dataset, ip_dataset_test
+    elif data_set =='tiny_nerf':
+        data_file = os.path.join('data', 'tiny_nerf_data.npz')
+        if not os.path.exists(data_file):  # get tiny nerf data
+            wget.download("http://cseweb.ucsd.edu/~viscomp/projects/LF/papers/ECCV20/nerf/tiny_nerf_data.npz",
+                          out=data_file)
+
+        data = np.load(data_file)
+        images = torch.from_numpy(data['images']).type(const.DTYPE)
+        poses = torch.from_numpy(data['poses']).type(const.DTYPE)
+        focal_len = torch.from_numpy(data['focal']).type(const.DTYPE)  # set to foal_len = torch.from...
+        height, width = images.shape[1:3]  # set to height, width = images.shape[1:3]
+
+        ip_dataset = ImagePoseDataset(images, poses)
+        return height, width, focal_len, ip_dataset
+
+
+
+
+def load_network():
+    model = NerfNet().type(const.DTYPE)
+    model_file = os.path.join(const.MODEL_SAVE_DIR, 'nerf_net')
+    if os.path.exists(model_file):
+        model.load_state_dict(torch.load(model_file))
+    return model
+
+
+def pose_spherical(theta, phi, radius):
+    """
+    Given view direction specified by spherical coordinates (theta, phi, radius) return a 4x4 camera-to-world matrix
+    :param theta:
+    :param phi:
+    :param radius:
+    :return:
+    """
+    theta = torch.Tensor([theta])
+    phi = torch.tensor([phi])
+    radius = torch.tensor([radius])
+
+    # transforms a point along the z axis by given t
+    transform_z = lambda t: torch.tensor([
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, t],
+        [0, 0, 0, 1]
+    ]).type(const.DTYPE)
+
+    # rotates a point away from the y-z plane by given angle phi
+    rotate_phi = lambda phi: torch.tensor([
+        [1, 0, 0, 0],
+        [0, torch.cos(phi), -torch.sin(phi), 0],
+        [0, torch.sin(phi), torch.cos(phi), 0],
+        [0, 0, 0, 1]
+    ]).type(const.DTYPE)
+
+    # rotates a point away from the x-z plane
+    rotate_theta = lambda theta: torch.tensor([
+        [torch.cos(theta), 0, -torch.sin(theta), 0],
+        [0, 1, 0, 0],
+        [torch.sin(theta), 0, torch.cos(theta), 0],
+        [0, 0, 0, 1]
+    ]).type(const.DTYPE)
+
+    # compose the transformations above to compute the camera_to_world matrix (pose)
+    camera_to_world = transform_z(radius)
+    camera_to_world = rotate_phi(phi/180. * np.pi) @ camera_to_world
+    camera_to_world = rotate_theta(theta/180. * np.pi) @ camera_to_world
+    camera_to_world = torch.tensor([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]]).type(
+        const.DTYPE) @ camera_to_world  # ?
+
+    return camera_to_world
+
+
+def render_view(**kwargs):
+    camera_to_world = pose_spherical(**kwargs)
+    rays_o, rays_d = compute_sample_rays(height, width, focal_len, camera_to_world)
+    output_img = render_rays(model, rays_o, rays_d)
+    img = torch.clip(output_img, min=0, max=1).cpu().detach().numpy()
+
+    plt.figure('network render')
+    plt.imshow(img)
+    plt.show()
+
+
+def closest_loc_sample(target_c2w, image_pose_dataset):
+    """
+    Given a target camera to world (c2w) matrix, find the image / pose within a dataset whose pose location is
+    physically closest (euclidean distance of transformation vector)
+
+    :param target_c2w:
+    :param image_pose_dataset:
+    :return:
+    """
+
+    targ_transformation = (target_c2w[:3,-1] + 4) / 8
+    ref_transformations = [(pose[:3, -1] + 4) / 8 for _, pose in image_pose_dataset] #normalized to 0,1
+    targ_r32 = target_c2w[2,1]
+    targ_r33 = target_c2w[2,2]
+    targ_r31 = target_c2w[2,0]
+    targ_r21 = target_c2w[1,0]
+    targ_r11 = target_c2w[0,0]
+
+    targ_angles = (torch.Tensor([
+        torch.atan2(targ_r32, targ_r33),
+        torch.atan2(-targ_r31, torch.sqrt(targ_r32**2 + targ_r33**2)),
+        torch.atan2(targ_r21, targ_r11)
+    ]) + torch.pi) / (2 * torch.pi) # normalize to 0,1
+    targ = torch.cat([targ_transformation, targ_angles.type(const.DTYPE)])
+    targ_y = targ_angles[1]
+    dists = []
+    for j in range(len(ref_transformations)):
+        ref_c2w = image_pose_dataset[j][1]
+        ref_r32 = ref_c2w[2, 1]
+        ref_r33 = ref_c2w[2, 2]
+        ref_r31 = ref_c2w[2, 0]
+        ref_r21 = ref_c2w[1, 0]
+        ref_r11 = ref_c2w[0, 0]
+        ref_angles = (torch.Tensor([
+            torch.atan2(ref_r32, ref_r33),
+            torch.atan2(-ref_r31, torch.sqrt(ref_r32**2 + ref_r33**2)),
+            torch.atan2(ref_r21, ref_r11)
+        ]) + torch.pi) / (2 * torch.pi) # normalize to 0,1
+        ref = torch.cat([ref_transformations[j], ref_angles.type(const.DTYPE)])
+        ref_y = ref_angles[1]
+        dists.append(torch.linalg.norm(targ_transformation - ref_transformations[j]))
+
+    dists = torch.Tensor(dists)
+    idx_min = torch.argmin(dists)
+    img_min = image_pose_dataset[idx_min][0]
+    return img_min, dists[idx_min]
+
+
+def make_video(model, height, width, focal_len):
+    # render in image sub-blocks
+    frames = []
+    thetas = np.linspace(0., 360., 120, endpoint=False)
+    block_size = 100  # assume image is shape  k * block_size  X k * block_size where k is an integer
+    num_blocks_h = height // block_size
+    num_blocks_w = width // block_size
+    for th in tqdm.tqdm(thetas):
+        c2w = pose_spherical(th, -30., 4.)
+        rays_o, rays_d = compute_sample_rays(800, 800, focal_len, c2w[:3, :4])
+        output_img = torch.zeros((800, 800, 3))
+
+        for i in range(num_blocks_h):
+            for j in range(num_blocks_w):
+                rays_o_block = rays_o[i * block_size: (i + 1) * block_size, j * block_size:(j + 1) * block_size, :]
+                rays_d_block = rays_d[i * block_size: (i + 1) * block_size, j * block_size:(j + 1) * block_size, :]
+                output_img_block = render_rays(model, rays_o_block, rays_d_block)
+
+                output_img[i * block_size: (i + 1) * block_size, j * block_size:(j + 1) * block_size,
+                :] = output_img_block
+
+        frames.append((255 * np.clip(output_img.cpu().detach().numpy(), 0, 1)).astype(np.uint8))
+
+    f = const.VIDEO_OUTPUT_FILE
+    imageio.mimwrite(f, frames, fps=30, quality=7)
