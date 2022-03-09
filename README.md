@@ -2,7 +2,7 @@
 PyTorch Implementation of Neural Radiance Fields.
 Author: Chris Fritz fritz17236 AT hotmail DOT com
 
-##Files
+## Files
 - constants.py : Contains list of network, simulation, and data configuration parameters. 
 - definitions.py: Contains class definitions including the nerf network MLP, and PyTorch datasets; contains function definitions including data i/o, and ray-tracing / volumetric rendering helpers.
 - network_model: script to load and train dataset according to configuration parameters specified in constants.py
