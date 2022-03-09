@@ -1,6 +1,7 @@
 # nerf
 PyTorch Implementation of Neural Radiance Fields.
-Author: Chris Fritz fritz17236 AT hotmail DOT com
+## Author:
+Chris Fritz fritz17236 AT hotmail DOT com
 
 ## Files
 - constants.py : Contains list of network, simulation, and data configuration parameters. 
