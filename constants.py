@@ -3,6 +3,7 @@ import torch
 # Configuration Parameters for NERF Network
 
 
+# NERF Training And Querying
 L_ENCODE = 10                       # Positional Encoding Projection Size
 NEAR_FRUSTUM = 2.0                  # how far to travel along a ray  before hitting the near clipping point of the view frustum
 FAR_FRUSTUM = 6.0                   # how far to travel along a ray  before hitting the far clipping point of the view frustum
@@ -18,4 +19,9 @@ RAY_CHUNK_SIZE = (8 * 1e9)  // 64   # Rays are passed through network in chunks 
 DOWNSAMPLE_FACTOR = 1               # Downsample image input before manipulating.
 VIDEO_OUTPUT_FILE = 'video.mp4'     # File for video output
 DTYPE = torch.cuda.FloatTensor if USE_CUDA else torch.FloatTensor  # set const datatype if using CUDA
+
+# NERF Mesh Extraction
+MESH_SAMPLE_RES = 256               # Mesh sample rate for marching cubes algorithm
+
+
 

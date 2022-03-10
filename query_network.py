@@ -10,12 +10,19 @@ from definitions import *
 if __name__ == '__main__':
     with torch.inference_mode():
         # Load Data
+        run_widget()
+        exit(0)
+
         height, width, focal_len, ip_dataset, ip_dataset_test = load_data()
         model = load_network()
 
+        make_widget_frames(model, height, width, focal_len)
+
+
+
+
+        exit(0)
         make_video(model, height, width, focal_len)
-
-
 
         # render in image sub-blocks
         dists = []

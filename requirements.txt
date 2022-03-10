@@ -12,3 +12,6 @@ wget~=3.2
 ignite~=1.1.0
 numba~=0.54.0
 tqdm~=4.62.1
+trimesh~=3.10.2
+pyrender~=0.1.45
+PyMCubes~=0.1.2

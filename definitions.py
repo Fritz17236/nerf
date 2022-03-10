@@ -7,6 +7,7 @@ import torch
 import torchvision
 import tqdm
 from matplotlib import pyplot as plt
+from matplotlib.widgets import Slider
 from torch import nn
 import wget
 from warnings import warn
@@ -16,6 +17,9 @@ import time
 import datetime
 import json
 import imageio
+import trimesh
+import pyrender
+import mcubes
 
 # classes depend on this function so it must be declared up here
 def positional_encode(data_in: torch.tensor, l_encode: int = const.L_ENCODE) -> torch.Tensor:
@@ -435,3 +439,102 @@ def make_video(model, height, width, focal_len):
 
     f = const.VIDEO_OUTPUT_FILE
     imageio.mimwrite(f, frames, fps=30, quality=7)
+
+
+def make_widget_frames(model, height, width, focal_len):
+    thetas = np.linspace(0., 360., 120, endpoint=False)
+    phis = np.linspace(0, -45, 2, endpoint=False)
+    frames = np.zeros((height, width, 3, len(thetas), len(phis)))
+
+    block_size = 100  # assume image is shape  k * block_size  X k * block_size where k is an integer
+    num_blocks_h = height // block_size
+    num_blocks_w = width // block_size
+
+    for idx_theta, th in enumerate(tqdm.tqdm(thetas)):
+        for idx_phi, ph in enumerate(tqdm.tqdm(phis)):
+            c2w = pose_spherical(th, ph, 4.)
+            rays_o, rays_d = compute_sample_rays(800, 800, focal_len, c2w[:3, :4])
+            output_img = torch.zeros((800, 800, 3))
+
+            for i in range(num_blocks_h):
+                for j in range(num_blocks_w):
+                    rays_o_block = rays_o[i * block_size: (i + 1) * block_size, j * block_size:(j + 1) * block_size, :]
+                    rays_d_block = rays_d[i * block_size: (i + 1) * block_size, j * block_size:(j + 1) * block_size, :]
+                    output_img_block = render_rays(model, rays_o_block, rays_d_block)
+
+                    output_img[i * block_size: (i + 1) * block_size, j * block_size:(j + 1) * block_size,
+                    :] = output_img_block
+
+            frames[..., idx_theta, idx_phi] = output_img
+    params = np.stack([thetas, phis], axis=-1)
+    np.save('widget_frames', frames)
+    np.save('widget_params', params)
+
+
+def run_widget():
+    plt.figure(0)
+    plt.clf()
+    frames = np.load('widget_frames.npy')
+    idx_th = 0
+    idx_ph = 1
+    img_handle = plt.imshow(frames[..., idx_th, idx_ph])
+    plt.subplots_adjust(left=0.25, bottom=0.25)
+    plt.axis('off')
+    ax_theta = plt.axes([0.25, 0.1, 0.65, 0.03])
+
+    theta_slider = Slider(
+        ax=ax_theta,
+        label=r"$\theta$",
+        valmin=0,
+        valmax=frames.shape[-2],
+        valinit=idx_th,
+        valstep=np.arange(frames.shape[-2]),
+    )
+
+    def update(val):
+        img_handle.set_data(frames[..., int(theta_slider.val), idx_ph])
+        plt.gcf().canvas.draw_idle()
+
+    theta_slider.on_changed(update)
+    plt.show()
+
+def extract_mesh(model, height, width, focal_len):
+    """
+    Extract a mesh respresentation of the visual scene
+    :param model:
+    :param ehight:
+    :param width:
+    :param focal_len:
+    :return:
+    """
+    ts = np.linspace(-1.2, 1.2, const.MESH_SAMPLE_RES)
+    ts_z = np.linspace(-.2, 1.2, const.MESH_SAMPLE_RES)
+    query_pts = np.stack(np.meshgrid(ts, ts, ts_z), -1).astype(np.float32)
+    flat = torch.Tensor(query_pts.reshape([-1,3])).cpu()
+
+    thetas = np.linspace(0., 360., flat.shape[0], endpoint=False)
+    c2ws = [pose_spherical(th, -30., 4.) for th in thetas]
+    view_dirs = []
+    for idx, c2w in enumerate(c2ws):
+        _ ,rays_d = compute_sample_rays(800, 800, focal_len, c2w[:3, :4])
+        view_dirs.append(rays_d[height//2, width//2, :])
+
+    flat = torch.cat([flat, view_dirs], dim=-1).cpu()
+    out = torch.empty(size=(flat.size()[0], 4)).cpu()
+
+    chunk_size = 1024 * 32
+    with torch.inference_mode():
+        for i in np.arange(0, out.shape[0], chunk_size):
+            out[i : (i + chunk_size), :] = model(flat[i : (i + chunk_size), :].type(const.DTYPE)).cpu()
+
+    out = torch.reshape(out, list(query_pts.shape[:-1]) + [-1]).cpu()
+    out = torch.maximum(out, torch.Tensor([0.]))
+    sigmas = torch.mean(out, dim=-1).cpu().numpy()
+
+    threshold = 25.
+    print('fraction occupied', np.mean(sigmas > threshold))
+    vertices, triangles = mcubes.marching_cubes(sigmas, threshold)
+    print('done', vertices.shape, triangles.shape)
+
+    mesh = trimesh.Trimesh(vertices / const.MESH_SAMPLE_RES - .5, triangles)
+    mesh.show()
